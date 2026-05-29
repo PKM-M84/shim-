@@ -238,7 +238,21 @@ Same idea for devcontainers, CI runners, or any sandbox — get the binary onto 
 | Structural searches all fall through to text | `ast-grep` isn't on PATH. `which ast-grep`; `brew install ast-grep`. |
 | Worked, then stopped after restarting the AI tool | You installed to `~/bin`. Use `/usr/local/bin` (universal PATH for all processes). |
 | Ordinary `grep` started behaving weirdly | You used `--with-grep`. Remove it: `sudo rm /usr/local/bin/grep`. |
-| **Roll back everything** | `sudo rm /usr/local/bin/rg /usr/local/bin/grep /usr/local/bin/smart-rg` and drop the `USE_BUILTIN_RIPGREP` line. Back to stock. |
+| **Roll back everything** | `./install.sh --uninstall` (see below). Back to stock. |
+
+---
+
+## Updating & uninstalling
+
+smart-rg keeps things tidy: it **owns exactly one directory — `~/.smart-rg/`** (your stats DB + an install *manifest*). Everything else it places (the `/usr/local/bin` binary, the `rg`/`grep` symlinks, the PATH line) is recorded in that manifest.
+
+- **Update:** just re-run the install (`git pull && ./install.sh`, or the `curl … | bash` one-liner). It reads the previous manifest, **removes any superseded files** (old layouts, a `grep` link you dropped, the pre-`/usr/local/bin` `~/bin` setup), reinstalls, and writes a fresh manifest — so updates don't leave orphans behind.
+- **Uninstall:**
+  ```bash
+  ./install.sh --uninstall            # remove binary, symlinks, and PATH lines (keeps your stats)
+  ./install.sh --uninstall --purge    # also delete ~/.smart-rg (stats + manifest)
+  ```
+  It only removes files that are unmistakably ours (symlinks pointing at a smart-rg binary; never your real `rg`/`grep`). No clone handy? `curl -fsSL https://raw.githubusercontent.com/PKM-M84/shim-/main/install.sh | bash -s -- --uninstall`.
 
 ---
 

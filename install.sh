@@ -7,9 +7,12 @@ REPO="PKM-M84/shim-"
 # Run user-space tools (brew, rustup, cargo) as the REAL user even under sudo,
 # and elevate only the steps that truly need root (/usr/local/bin writes).
 REAL_USER="${SUDO_USER:-$(whoami)}"
-REAL_HOME="$(eval echo "~$REAL_USER")"
+REAL_HOME="${SMARTRG_HOME_OVERRIDE:-$(eval echo "~$REAL_USER")}"   # SMARTRG_HOME_OVERRIDE: tests only
 as_user()   { if [ "$EUID" -eq 0 ] && [ "$REAL_USER" != "root" ]; then sudo -u "$REAL_USER" -H "$@"; else "$@"; fi; }
 need_root() { if [ "$EUID" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
+# Remove a path, escalating with sudo ONLY when its directory isn't user-writable
+# (so user-owned ~/bin, ~/.local/bin, ~/.smart-rg never trigger a password prompt).
+_rm() { if [ -w "$(dirname "$1")" ]; then rm -rf "$1"; else need_root rm -rf "$1"; fi; }
 uhave()     { as_user bash -lc "command -v '$1'" >/dev/null 2>&1; }   # is <cmd> on the real user's PATH?
 ulc()       { as_user bash -lc "$1"; }                                # run a command line as the real user
 
@@ -34,6 +37,7 @@ fix_path_if_needed() {
             [ "$d" = "/usr/local/bin" ] && continue
             if [ -d "$d" ] && [ -w "$d" ]; then
                 if ln -sf /usr/local/bin/smart-rg "$d/rg"; then
+                    track "$d/rg"
                     echo "  ✓ Linked rg into $d (already ahead of Homebrew on your PATH)"
                     echo "    → run 'hash -r' (or open a new terminal), then check:"
                     echo "        which rg    # should now show:  $d/rg"
@@ -59,6 +63,96 @@ fix_path_if_needed() {
     echo "  ✓ Prepended /usr/local/bin to PATH in $prof"
     echo "    → restart your terminal, or run:  source $prof   then check:"
     echo "        which rg    # should now show:  /usr/local/bin/rg"
+}
+
+# ── install manifest + cleanup (tidy install / clean updates / uninstall) ─────
+# smart-rg "owns" exactly one directory — ~/.smart-rg (stats + this manifest).
+# Every other path it creates (the binary, rg/grep symlinks) is recorded here so
+# updates can drop superseded files and `--uninstall` removes precisely what we made.
+MANIFEST="$REAL_HOME/.smart-rg/manifest"
+CREATED=()
+track() { CREATED+=("$1"); }
+
+# Remove a path ONLY if it's unmistakably ours: a symlink whose target contains
+# "smart-rg", or a regular file named smart-rg / smart-rg-rs. Never a real tool.
+rm_if_smartrg() {
+    local p="$1"
+    if [ -L "$p" ]; then
+        case "$(readlink "$p" 2>/dev/null || true)" in
+            *smart-rg*) _rm "$p"; echo "  removed symlink $p" ;;
+        esac
+    elif [ -f "$p" ]; then
+        case "$(basename "$p")" in
+            smart-rg|smart-rg-rs) _rm "$p"; echo "  removed $p" ;;
+        esac
+    fi
+    return 0
+}
+
+# Strip the installer's PATH block (marker comment + the export line right after).
+remove_profile_lines() {
+    local prof tmp
+    for prof in "$REAL_HOME/.zshrc" "$REAL_HOME/.bash_profile" "$REAL_HOME/.bashrc"; do
+        if [ -f "$prof" ] && grep -qE 'added by smart-rg installer|smart-rg: prefer' "$prof" 2>/dev/null; then
+            tmp="$(mktemp)"
+            if awk '/added by smart-rg installer/||/smart-rg: prefer/{skip=1;next} skip{skip=0;next}{print}' "$prof" > "$tmp"; then
+                cat "$tmp" > "$prof"; echo "  cleaned smart-rg PATH lines from $prof"
+            fi
+            rm -f "$tmp"
+        fi
+    done
+    return 0
+}
+
+# Remove the old ~/bin layout (superseded by /usr/local/bin).
+cleanup_legacy() {
+    rm_if_smartrg "$REAL_HOME/bin/rg"
+    rm_if_smartrg "$REAL_HOME/bin/grep"
+    rm_if_smartrg "$REAL_HOME/bin/smart-rg"
+    local b
+    for b in "$REAL_HOME"/bin/smart-rg-rs*; do
+        if [ -e "$b" ]; then _rm "$b"; echo "  removed legacy $b"; fi
+    done
+    return 0
+}
+
+# Remove paths from the PREVIOUS manifest we're not recreating now (handles
+# layout/flag changes, e.g. dropping --with-grep removes the grep symlink).
+remove_orphans() {
+    [ -f "$MANIFEST" ] || return 0
+    local old c keep
+    while IFS= read -r old; do
+        [ -n "$old" ] || continue
+        keep=0
+        for c in "${CREATED[@]}"; do if [ "$c" = "$old" ]; then keep=1; fi; done
+        if [ "$keep" -eq 0 ]; then rm_if_smartrg "$old"; fi
+    done < "$MANIFEST"
+    return 0
+}
+
+write_manifest() {
+    mkdir -p "$REAL_HOME/.smart-rg"
+    if [ "${#CREATED[@]}" -gt 0 ]; then printf '%s\n' "${CREATED[@]}" > "$MANIFEST"; else : > "$MANIFEST"; fi
+    [ "$EUID" -eq 0 ] && chown -R "$REAL_USER" "$REAL_HOME/.smart-rg" 2>/dev/null || true
+    return 0
+}
+
+do_uninstall() {
+    echo "🧹 Uninstalling smart-rg..."
+    if [ -f "$MANIFEST" ]; then
+        while IFS= read -r p; do if [ -n "$p" ]; then rm_if_smartrg "$p"; fi; done < "$MANIFEST"
+    fi
+    cleanup_legacy
+    rm_if_smartrg /usr/local/bin/smart-rg
+    remove_profile_lines
+    if [ "${PURGE:-0}" -eq 1 ]; then
+        _rm "$REAL_HOME/.smart-rg"; echo "  removed ~/.smart-rg (stats + manifest)"
+    else
+        rm -f "$MANIFEST" 2>/dev/null || true
+        echo "  kept ~/.smart-rg stats (re-run with --purge to remove them too)"
+    fi
+    echo "✅ Uninstalled. (Claude's USE_BUILTIN_RIPGREP=0 left in ~/.claude/settings.json — harmless.)"
+    return 0
 }
 
 # ── Claude Code settings merge (testable, no root, no install needed) ─────────
@@ -154,24 +248,35 @@ WITH_GREP=0
 CONFIGURE_CLAUDE=1
 INSTALL_DEPS=1
 FIX_PATH=1
+UNINSTALL=0
+PURGE=0
 for arg in "$@"; do
   case "$arg" in
     --with-grep) WITH_GREP=1 ;;
     --no-claude-config) CONFIGURE_CLAUDE=0 ;;
     --no-deps) INSTALL_DEPS=0 ;;
     --no-fix-path) FIX_PATH=0 ;;
+    --uninstall) UNINSTALL=1 ;;
+    --purge) PURGE=1 ;;
     -h|--help)
-      echo "Usage: ./install.sh [--with-grep] [--no-claude-config] [--no-deps] [--no-fix-path]"
+      echo "Usage: ./install.sh [flags]"
       echo "  (run as a normal user; it uses sudo only for /usr/local/bin)"
       echo "  --with-grep             also intercept 'grep' (shadows system grep; off by default)"
       echo "  --no-claude-config      leave ~/.claude/settings.json untouched"
       echo "  --no-deps               skip auto-installing ast-grep / ripgrep / Rust"
       echo "  --no-fix-path           don't adjust PATH if another rg shadows the shim"
+      echo "  --uninstall             remove everything smart-rg installed (symlinks, binary, PATH lines)"
+      echo "  --purge                 with --uninstall, also delete ~/.smart-rg (stats)"
       echo "  --check                 report what's installed and exit (no changes)"
       echo "  --merge-claude-config [path]   only set USE_BUILTIN_RIPGREP=0 and exit (no root)"
       exit 0 ;;
   esac
 done
+
+if [ "$UNINSTALL" -eq 1 ]; then
+    do_uninstall
+    exit 0
+fi
 
 if [ "$EUID" -eq 0 ] && [ "$REAL_USER" = "root" ]; then
     echo "⚠️  Running as real root: Homebrew/rustup can't install as root."
@@ -234,11 +339,14 @@ echo "✓ Binary: $BIN"
 
 # ── install + symlink (needs root) ────────────────────────────────────────────
 need_root cp "$BIN" /usr/local/bin/smart-rg
+track /usr/local/bin/smart-rg
 need_root ln -sf /usr/local/bin/smart-rg /usr/local/bin/rg
+track /usr/local/bin/rg
 echo "✓ Installed: /usr/local/bin/smart-rg  (rg -> smart-rg)"
 
 if [ "$WITH_GREP" -eq 1 ]; then
     need_root ln -sf /usr/local/bin/smart-rg /usr/local/bin/grep
+    track /usr/local/bin/grep
     echo "⚠️  grep -> smart-rg  (system grep shadowed everywhere; undo: sudo rm /usr/local/bin/grep)"
 fi
 
@@ -263,6 +371,11 @@ else
     echo "      then: which rg    # should show ~/.local/bin/rg"
 fi
 uhave ast-grep || echo "  ⚠️  ast-grep still not found — structural searches will fall back to text."
+
+# ── tidy: drop superseded artifacts, then record what this install created ────
+remove_orphans || true       # remove anything in the OLD manifest we didn't recreate
+cleanup_legacy || true       # remove the pre-/usr/local/bin ~/bin layout, if present
+write_manifest || true       # record the new install for next update / uninstall
 
 echo ""
 echo "✅ smart-rg is ready."

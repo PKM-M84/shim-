@@ -41,6 +41,15 @@ jobs:
           test -L /usr/local/bin/rg                # rg symlink created
           /usr/local/bin/smart-rg stats            # runs without error
           command -v ast-grep                       # runtime dep present
+          test -f "$HOME/.smart-rg/manifest"        # install manifest written
           python3 -c "import json,os; \
             d=json.load(open(os.path.expanduser('~/.claude/settings.json'))); \
             assert d['env']['USE_BUILTIN_RIPGREP']=='0', d"
+      - name: uninstall removes everything cleanly
+        run: |
+          set -euo pipefail
+          bash install.sh --uninstall --purge
+          test ! -e /usr/local/bin/smart-rg         # binary gone
+          test ! -e /usr/local/bin/rg               # symlink gone
+          test ! -e "$HOME/.smart-rg"               # data purged
+          echo "uninstall clean ✓"
