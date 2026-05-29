@@ -1,0 +1,11 @@
+[package]
+name = "smart-rg"
+version = "0.2.0"
+edition = "2021"
+description = "rg-compatible shim that redirects structural searches to ast-grep"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

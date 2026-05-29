@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shim Stats — smart-rg</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4eb; --muted: #6b7280; --accent: #38bdf8;
+    --green: #34d399; --red: #f87171; --purple: #a78bfa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 1.5rem; font-weight: 700; }
+  header h1 span { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 0.8rem; text-align: right; }
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem; margin-bottom: 2rem;
+  }
+  .kpi {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.25rem; text-align: center;
+  }
+  .kpi-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+  .kpi-value { font-size: 2rem; font-weight: 700; }
+  .kpi-value.green { color: var(--green); }
+  .kpi-value.accent { color: var(--accent); }
+  .kpi-value.purple { color: var(--purple); }
+  .kpi-value.red { color: var(--red); }
+  .kpi-sub { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+  .charts { margin-bottom: 1.5rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem;
+  }
+  .card h3 { font-size: 0.85rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem; }
+  .card canvas { max-height: 320px; }
+  .split-charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 1rem;
+  }
+  .empty-state {
+    text-align: center; padding: 4rem 2rem; color: var(--muted);
+  }
+  .empty-state .icon { font-size: 3rem; margin-bottom: 1rem; }
+  .agent-badge {
+    display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 600;
+    background: rgba(56,189,248,0.15); color: var(--accent);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { color: var(--muted); text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--border); }
+  td { padding: 0.5rem; border-bottom: 1px solid var(--border); }
+  .pattern-code { color: var(--accent); font-size: 0.8rem; font-family: monospace; }
+  .match-count { color: var(--green); }
+
+  /* === ROI / VALUE REDESIGN (surgical additions) === */
+  .primary-comparison {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.1);
+  }
+  .primary-comparison h3 { color: var(--accent); font-size: 0.92rem; }
+  .comparison-table {
+    font-size: 0.72rem;
+    background: #13161f;
+  }
+  .comparison-table th {
+    font-size: 0.62rem;
+    white-space: nowrap;
+    padding: 0.35rem 0.45rem;
+    color: #8b95a8;
+  }
+  .comparison-table td {
+    padding: 0.28rem 0.45rem;
+    white-space: nowrap;
+    border-bottom-color: #252b38;
+  }
+  .comparison-table tr:hover td { background: #1c2030; }
+  .comparison-table .num { text-align: right; color: #9ca3af; }
+  .comparison-table .num-accent { text-align: right; color: var(--accent); font-weight: 600; }
+  .comparison-table .num-green { text-align: right; color: var(--green); font-weight: 600; }
+  .savings-cell {
+    background: #1a3a2a;
+    color: var(--green);
+    font-weight: 600;
+    text-align: right;
+  }
+  .savings-cell.red {
+    background: #3a1a20;
+    color: var(--red);
+  }
+  .small-kpis .kpi {
+    padding: 0.55rem 0.7rem;
+  }
+  .small-kpis .kpi-value {
+    font-size: 1.05rem;
+    line-height: 1.1;
+    font-weight: 600;
+  }
+  .operational {
+    margin-top: 1.75rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+    opacity: 0.82;
+  }
+  .operational .card { background: #161923; }
+  details summary { cursor: pointer; font-size: 0.72rem; color: var(--muted); padding: 0.15rem 0; user-select:none; }
+  details[open] summary { color: #8b95a8; }
+  .no-comparison { padding: 1.25rem 1rem; color: var(--muted); font-size: 0.88rem; text-align: center; background: #13161f; border-radius: 6px; }
+
+  @media (max-width: 640px) {
+    body { padding: 1rem; }
+    .split-charts { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>🪶 <span>Shim</span> Stats</h1>
+    </div>
+    <div class="meta">
+      <div>smart-rg v0.2.0</div>
+      <div>Generated: <span id="genTime"></span></div>
+    </div>
+  </header>
+
+  <div id="content"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+const DATA = __SHIM_DATA__;
+const AST_COLOR = '#34d399';
+const TEXT_COLOR = '#6b7280';
+const PALETTE = ['#38bdf8','#34d399','#fbbf24','#f87171','#a78bfa','#fb923c','#2dd4bf','#f472b6'];
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function render(stats) {
+  document.getElementById('genTime').textContent = new Date().toLocaleString();
+
+  if (!stats || stats.total_intercepted === 0) {
+    document.getElementById('content').innerHTML = `
+      <div class="empty-state">
+        <div class="icon">📊</div>
+        <h2>No data yet</h2>
+        <p style="margin-top:0.5rem">smart-rg hasn't intercepted any searches. Keep coding and check back!</p>
+      </div>`;
+    return;
+  }
+
+  const structural = stats.structural || 0;
+  const passthrough = stats.passthrough || 0;
+  const rate = stats.total_intercepted > 0
+    ? (structural / stats.total_intercepted * 100).toFixed(1)
+    : '0.0';
+
+  const hasComparisons = Array.isArray(stats.comparisons) && stats.comparisons.length > 0;
+  const compCount = hasComparisons ? stats.comparisons.length : 0;
+
+  // === NEW SAVINGS KPIs (replacing primary operational KPIs) ===
+  const savingsHTML = `
+    <div class="kpis">
+      <div class="kpi">
+        <div class="kpi-label">Total Files Saved</div>
+        <div class="kpi-value green">${(stats.total_files_saved || 0).toLocaleString()}</div>
+        <div class="kpi-sub">fewer files searched</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Est. Tokens Saved</div>
+        <div class="kpi-value accent">${(stats.total_tokens_saved_estimate || 0).toLocaleString()}</div>
+        <div class="kpi-sub">~15 tokens per match</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Est. Cost Saved</div>
+        <div class="kpi-value green">${(stats.total_cost_saved_cents || 0).toFixed(2)}¢</div>
+        <div class="kpi-sub">input cost avoided</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Comparison Runs</div>
+        <div class="kpi-value purple">${compCount}</div>
+        <div class="kpi-sub">patterns benchmarked</div>
+      </div>
+    </div>`;
+
+  // === PRIMARY: Detail Comparison Table ===
+  let comparisonTableHTML;
+  if (!hasComparisons) {
+    comparisonTableHTML = `
+      <div class="no-comparison">
+        No comparison data yet — run benchmarks against your codebase<br>
+        <span style="font-size:0.75rem;opacity:0.7">(smart-rg automatically captures rg vs ast-grep results for ROI analysis)</span>
+      </div>`;
+  } else {
+    // Sort by tokens_saved descending (most valuable first)
+    const sorted = [...stats.comparisons].sort((a, b) => {
+      const ta = (b.estimated_tokens_saved || 0) - (a.estimated_tokens_saved || 0);
+      if (ta !== 0) return ta;
+      return (b.files_saved || 0) - (a.files_saved || 0);
+    });
+
+    const rows = sorted.map(c => {
+      const agF = c.ag_files || 0;
+      const rgF = c.rg_files || 0;
+      const savedF = c.files_saved || 0;
+      const pct = rgF > 0 ? (savedF / rgF * 100) : 0;
+      const agM = c.ag_matches || 0;
+      const rgM = c.rg_results || 0;
+      // Prefer real captured token/cost figures; fall back to the live
+      // matches×15 @ $2/M-tokens estimate when a row carries none.
+      const toksR = c.text_tokens || (rgM * 15);
+      const toksA = c.ast_tokens || (agM * 15);
+      const toksSaved = c.estimated_tokens_saved || (toksR - toksA);
+      const costR = c.text_cost_cents || (toksR * 0.0002);
+      const costA = c.ast_cost_cents || (toksA * 0.0002);
+      const netCents = c.estimated_cost_saved_cents || (costR - costA);
+      const netSign = netCents >= 0 ? '+' : '−';
+      const netDisp = (netCents / 100).toFixed(2);
+      const netClass = netCents >= 0 ? '' : 'red';
+
+      return `
+        <tr>
+          <td><code class="pattern-code" style="font-size:0.68rem">${escHtml(c.pattern || '')}</code></td>
+          <td class="num">${rgF.toLocaleString()}</td>
+          <td class="num-accent">${agF.toLocaleString()}</td>
+          <td class="savings-cell">−${savedF} <span style="opacity:0.75;font-size:0.66rem">(${pct.toFixed(1)}%)</span></td>
+          <td class="num">${rgM}</td>
+          <td class="num-green">${agM}</td>
+          <td class="num">${toksR.toLocaleString()}</td>
+          <td class="num-accent">${toksA.toLocaleString()}</td>
+          <td class="savings-cell">−${toksSaved.toLocaleString()}</td>
+          <td class="num">${costR.toFixed(2)}¢</td>
+          <td class="num-green">${costA.toFixed(2)}¢</td>
+          <td class="savings-cell ${netClass}">${netSign}${netDisp}¢</td>
+        </tr>`;
+    }).join('');
+
+    comparisonTableHTML = `
+      <div style="overflow-x:auto">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th style="text-align:left;padding-left:0.55rem">Pattern</th>
+              <th style="text-align:right">Text Files</th>
+              <th style="text-align:right">AST Files</th>
+              <th style="text-align:right">Files Saved</th>
+              <th style="text-align:right">Text Matches</th>
+              <th style="text-align:right">AST Matches</th>
+              <th style="text-align:right">Text Tokens</th>
+              <th style="text-align:right">AST Tokens</th>
+              <th style="text-align:right">Tokens Saved</th>
+              <th style="text-align:right">Text Cost</th>
+              <th style="text-align:right">AST Cost</th>
+              <th style="text-align:right">Net Saved</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // === SAVINGS BAR CHARTS ===
+  const savingsChartsHTML = `
+    <div class="split-charts" style="margin: 0.75rem 0 1.25rem">
+      <div class="card">
+        <h3>Files: AST (ast-grep) vs Text (rg)</h3>
+        <div style="height:260px"><canvas id="savingsFilesChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3>Tokens Saved by Pattern</h3>
+        <div style="height:260px"><canvas id="savingsTokensChart"></canvas></div>
+      </div>
+    </div>`;
+
+  // === OPERATIONAL WIDGETS (de-emphasized, below) ===
+  const operationalHTML = `
+    <div class="operational">
+      <div class="small-kpis">
+        <div style="margin-bottom:0.4rem;font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">System Activity (for operators)</div>
+        <div class="kpis small-kpis" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.55rem;margin-bottom:0.85rem">
+          <div class="kpi">
+            <div class="kpi-label" style="font-size:0.64rem">Searches</div>
+            <div class="kpi-value accent">${stats.total_intercepted || 0}</div>
+            <div class="kpi-sub" style="font-size:0.65rem">${rate}% redirected</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" style="font-size:0.64rem">AST Redirects</div>
+            <div class="kpi-value green">${structural || 0}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" style="font-size:0.64rem">Text Fallbacks</div>
+            <div class="kpi-value red">${passthrough || 0}</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label" style="font-size:0.64rem">Matches</div>
+            <div class="kpi-value purple">${(stats.total_matches_found || 0).toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:0.7rem">
+        <details>
+          <summary>Redirects Over Time ▼</summary>
+          <div style="height:220px;margin-top:0.5rem"><canvas id="timeBar"></canvas></div>
+        </details>
+      </div>
+
+      <div class="split-charts" style="gap:0.55rem">
+        <div class="card">
+          <details>
+            <summary>By Language (AST) ▼</summary>
+            <div style="height:195px;margin-top:0.4rem"><canvas id="langBar"></canvas></div>
+          </details>
+        </div>
+        <div class="card">
+          <h3 style="margin-bottom:0.35rem;font-size:0.72rem">Recent Structural Redirects</h3>
+          <div style="overflow-x:auto;max-height:168px">
+            <table style="font-size:0.68rem">
+              <thead><tr><th>Pattern</th><th>Lang</th><th>#</th><th>Agent</th><th>When</th></tr></thead>
+              <tbody id="recentTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  // Build full HTML
+  document.getElementById('content').innerHTML = `
+    ${savingsHTML}
+
+    <!-- PRIMARY VIEW: Detail Comparison Table -->
+    <div class="card primary-comparison">
+      <h3>rg vs ast-grep — File & Token Savings (Primary)</h3>
+      ${comparisonTableHTML}
+    </div>
+
+    ${savingsChartsHTML}
+
+    ${operationalHTML}
+  `;
+
+  // ── Time series ──
+  if (stats.by_day && stats.by_day.length > 0) {
+    const days = stats.by_day;
+    new Chart(document.getElementById('timeBar'), {
+      type: 'bar',
+      data: {
+        labels: days.map(d => d.day.slice(5)),
+        datasets: [
+          { label: 'AST', data: days.map(d => d.structural), backgroundColor: AST_COLOR, borderRadius: 4 },
+          { label: 'Text', data: days.map(d => d.total - d.structural), backgroundColor: TEXT_COLOR, borderRadius: 4 },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#e1e4eb', usePointStyle: true, padding: 12, font: { size: 11 } } } },
+        scales: {
+          x: { stacked: true, ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: '#2a2d3a' } },
+          y: { stacked: true, ticks: { color: '#6b7280' }, grid: { color: '#2a2d3a' }, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  // ── Language bar ──
+  if (stats.by_language && Object.keys(stats.by_language).length > 0) {
+    const langs = Object.entries(stats.by_language).sort((a,b) => b[1] - a[1]);
+    new Chart(document.getElementById('langBar'), {
+      type: 'bar',
+      data: {
+        labels: langs.map(l => l[0]),
+        datasets: [{ data: langs.map(l => l[1]), backgroundColor: langs.map((_,i) => PALETTE[i % PALETTE.length]), borderRadius: 4 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#6b7280' }, grid: { color: '#2a2d3a' }, beginAtZero: true },
+          y: { ticks: { color: '#e1e4eb', font: { size: 11 } }, grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  // ── Recent redirects table ──
+  const tbody = document.getElementById('recentTable');
+  if (stats.recent_redirects && stats.recent_redirects.length > 0) {
+    tbody.innerHTML = stats.recent_redirects.map(e => `
+      <tr>
+        <td><code class="pattern-code">${escHtml(e.pattern)}</code></td>
+        <td>${escHtml(e.lang || '—')}</td>
+        <td class="match-count">${e.matches}</td>
+        <td><span class="agent-badge">${escHtml(e.agent || '—')}</span></td>
+        <td style="color:var(--muted);font-size:0.75rem">${escHtml(e.ts.slice(0,16).replace('T',' '))}</td>
+      </tr>`).join('');
+  } else {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center">No structural redirects yet</td></tr>';
+  }
+
+  // ============================================================
+  // NEW SAVINGS / ROI CHARTS (after DOM injection)
+  // ============================================================
+  if (hasComparisons && stats.comparisons && stats.comparisons.length > 0) {
+    const comps = [...stats.comparisons].sort((a, b) => (b.estimated_tokens_saved||0) - (a.estimated_tokens_saved||0));
+    const maxN = Math.min(comps.length, 12); // cap for readability
+    const topComps = comps.slice(0, maxN);
+
+    // 1) Grouped bar chart: Files (Text rg gray vs AST green)
+    const filesCtx = document.getElementById('savingsFilesChart');
+    if (filesCtx) {
+      new Chart(filesCtx, {
+        type: 'bar',
+        data: {
+          labels: topComps.map(c => (c.pattern || '').length > 22 ? (c.pattern||'').slice(0,19)+'...' : (c.pattern||'')),
+          datasets: [
+            {
+              label: 'Text (rg)',
+              data: topComps.map(c => c.rg_files || 0),
+              backgroundColor: TEXT_COLOR,
+              borderRadius: 3
+            },
+            {
+              label: 'AST (ast-grep)',
+              data: topComps.map(c => c.ag_files || 0),
+              backgroundColor: AST_COLOR,
+              borderRadius: 3
+            }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { color: '#e1e4eb', usePointStyle: true, padding: 12, font: { size: 11 } } } },
+          scales: {
+            x: { ticks: { color: '#6b7280', font: { size: 10 } }, grid: { color: '#2a2d3a' } },
+            y: { ticks: { color: '#6b7280' }, grid: { color: '#2a2d3a' }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    // 2) Horizontal bar: Tokens Saved per pattern (green accent)
+    const tokensCtx = document.getElementById('savingsTokensChart');
+    if (tokensCtx) {
+      new Chart(tokensCtx, {
+        type: 'bar',
+        data: {
+          labels: topComps.map(c => (c.pattern || '').length > 22 ? (c.pattern||'').slice(0,19)+'...' : (c.pattern||'')),
+          datasets: [
+            {
+              label: 'Tokens Saved (rg - ag)',
+              data: topComps.map(c => c.estimated_tokens_saved || 0),
+              backgroundColor: AST_COLOR,
+              borderRadius: 4
+            }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          indexAxis: 'y',
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            x: { ticks: { color: '#6b7280' }, grid: { color: '#2a2d3a' }, beginAtZero: true },
+            y: { ticks: { color: '#e1e4eb', font: { size: 10 } }, grid: { display: false } }
+          }
+        }
+      });
+    }
+  }
+}
+
+render(DATA);
+</script>
+</body>
+</html>

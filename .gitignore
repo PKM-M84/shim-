@@ -1,0 +1,6 @@
+/target/
+/report.html
+/shim-stats.html
+*.dump
+.DS_Store
+**/.DS_Store
