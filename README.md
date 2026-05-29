@@ -51,15 +51,17 @@ sudo ln -sf /usr/local/bin/smart-rg /usr/local/bin/rg
 
 > **Why `/usr/local/bin`?** It's in macOS's default PATH for every process — terminal, GUI apps, launchd, everything. Using `~/bin` can break when you restart your AI tool because the new process might not inherit your shell configs. `/usr/local/bin` Just Works. (It must come *before* Homebrew's `/opt/homebrew/bin` in PATH so your `rg` wins — `install.sh` warns you if it doesn't.)
 
-**Step 4 — Tell Claude Code to actually use it (important!):**
+**Step 4 — Claude Code config (the installer already did this):**
 
-Claude Code ships its **own bundled ripgrep** and ignores your PATH unless you flip one switch. Add this to `~/.claude/settings.json`:
+Claude Code ships its **own bundled ripgrep** and ignores your PATH unless you flip one switch. `install.sh` sets it for you — it merges this into `~/.claude/settings.json`:
 
 ```json
 {
   "env": { "USE_BUILTIN_RIPGREP": "0" }
 }
 ```
+
+If you installed manually (or want to check), add/confirm that block yourself. Skip it with `sudo ./install.sh --no-claude-config`. Restart Claude Code so it picks up the new env.
 
 Other tools (Cursor, Codex, Aider, …) shell out to `rg`/`grep` on PATH, so they pick up shim automatically — it works with **any** provider (Anthropic, OpenRouter, DeepSeek, etc.) because it intercepts at the *tool* level, not the model.
 
@@ -205,7 +207,7 @@ See [Quick Start](#quick-start) for the simple version. Prerequisites:
 
 ### Claude Code configuration
 
-Add `USE_BUILTIN_RIPGREP=0` to `~/.claude/settings.json` (so Claude uses your PATH `rg` instead of its bundled one):
+`install.sh` automatically merges `USE_BUILTIN_RIPGREP=0` into `~/.claude/settings.json` (so Claude uses your PATH `rg` instead of its bundled one). If you installed manually, add it yourself:
 
 ```json
 { "env": { "USE_BUILTIN_RIPGREP": "0" } }
