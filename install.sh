@@ -35,7 +35,8 @@ fix_path_if_needed() {
             if [ -d "$d" ] && [ -w "$d" ]; then
                 if ln -sf /usr/local/bin/smart-rg "$d/rg"; then
                     echo "  ✓ Linked rg into $d (already ahead of Homebrew on your PATH)"
-                    echo "    → run 'hash -r' (or open a new terminal), then: which rg"
+                    echo "    → run 'hash -r' (or open a new terminal), then check:"
+                    echo "        which rg    # should now show:  $d/rg"
                     return 0
                 fi
             fi
@@ -56,7 +57,8 @@ fix_path_if_needed() {
     printf '\n# added by smart-rg installer: put the shim (/usr/local/bin) before Homebrew rg\nexport PATH="/usr/local/bin:$PATH"\n' >> "$prof"
     [ "$EUID" -eq 0 ] && chown "$REAL_USER" "$prof" 2>/dev/null || true
     echo "  ✓ Prepended /usr/local/bin to PATH in $prof"
-    echo "    → restart your terminal, or run:  source $prof   (then: which rg)"
+    echo "    → restart your terminal, or run:  source $prof   then check:"
+    echo "        which rg    # should now show:  /usr/local/bin/rg"
 }
 
 # ── Claude Code settings merge (testable, no root, no install needed) ─────────
@@ -258,6 +260,7 @@ elif [ "$FIX_PATH" -eq 1 ]; then
 else
     echo "  ⚠️  Another rg is first on PATH. Put /usr/local/bin (or ~/.local/bin) ahead of it,"
     echo "      e.g.: ln -sf /usr/local/bin/smart-rg ~/.local/bin/rg && hash -r"
+    echo "      then: which rg    # should show ~/.local/bin/rg"
 fi
 uhave ast-grep || echo "  ⚠️  ast-grep still not found — structural searches will fall back to text."
 
