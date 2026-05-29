@@ -171,6 +171,7 @@ shim logs every search to a local SQLite database (`~/.smart-rg/stats.db`, creat
 smart-rg stats                         # terminal dashboard
 smart-rg stats --json                  # machine-readable
 smart-rg report -o report.html --open  # self-contained HTML report with charts
+smart-rg prune [--days 30]             # delete logged events older than N days
 ```
 
 The HTML report shows the **rg vs ast-grep comparison** per pattern — files matched, estimated tokens, and cost saved — the same shape as the benchmark table above. Comparison rows can carry **real** token/cost figures; live captures fall back to a `matches × 15 tokens @ $2/M` estimate.
@@ -183,6 +184,14 @@ Two optional env vars:
 | `SMART_RG_HOME` | `~/.smart-rg` | Where `stats.db` lives. Point elsewhere to test without touching your real stats. |
 
 > **Privacy:** the database is local only. shim never phones home — no analytics, no telemetry.
+
+### Running multiple agents at once
+
+Every `rg` call is its own short-lived process, and they all log to the same `~/.smart-rg/stats.db`. That's fine: the DB uses **WAL + a 3s busy-timeout**, so concurrent agents wait-and-retry instead of dropping stats, and SQLite's file locking keeps the DB safe from corruption. Searches are never blocked or failed by logging — it's best-effort.
+
+- **Tell agents apart:** give each instance a distinct `SMART_RG_AGENT` (e.g. `claude-A`, `claude-B`) and the report's per-agent breakdown separates them.
+- **Sub-agents & restarts:** anything that inherits the PATH + `USE_BUILTIN_RIPGREP=0` (spawned sub-agents, new shells, after a `cd` or restart) is intercepted automatically — which is why the system-wide `/usr/local/bin` install matters for full coverage.
+- **Retention** is off the hot path: events older than 30 days are pruned lazily on `stats`/`report`, or on demand with `smart-rg prune`. (Comparisons are kept — they hold the savings data.)
 
 ---
 

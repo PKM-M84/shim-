@@ -40,7 +40,7 @@ fn ensure_home() {
 // ── CLI ──────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "smart-rg", version = "0.2.0")]
+#[command(name = "smart-rg", version = "0.2.1")]
 #[command(disable_help_flag = true)]
 struct Cli {
     #[command(subcommand)]
@@ -108,6 +108,11 @@ enum Commands {
         #[arg(long)]
         open: bool,
     },
+    /// Delete logged events older than N days (comparisons are kept)
+    Prune {
+        #[arg(long, default_value_t = 30)]
+        days: u64,
+    },
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -129,6 +134,20 @@ fn main() {
                 let cli = Cli::parse_from(args.iter());
                 if let Some(Commands::Report { output, open }) = cli.command {
                     generate_report(&output, open);
+                    return;
+                }
+            }
+            "prune" => {
+                let cli = Cli::parse_from(args.iter());
+                if let Some(Commands::Prune { days }) = cli.command {
+                    match open_db() {
+                        Some(conn) => {
+                            let n = prune_old_events(&conn, days);
+                            println!("🧹 Pruned {} event(s) older than {} day(s) from {}",
+                                     n, days, db_path().display());
+                        }
+                        None => eprintln!("No stats database found."),
+                    }
                     return;
                 }
             }
@@ -216,7 +235,9 @@ fn exec_real_rg(args: &[String]) -> ! {
 
 fn init_db(conn: &Connection) {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS events (
+        "PRAGMA busy_timeout=3000;
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent TEXT NOT NULL DEFAULT 'unknown',
             event TEXT NOT NULL,
@@ -244,8 +265,7 @@ fn init_db(conn: &Connection) {
             estimated_cost_saved_cents INTEGER NOT NULL DEFAULT 0,
             ts TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_comparisons_ts ON comparisons(ts);
-        PRAGMA journal_mode=DELETE;"
+        CREATE INDEX IF NOT EXISTS idx_comparisons_ts ON comparisons(ts);"
     ).ok();
 
     // Idempotent column migrations. Run each independently so a column that
@@ -284,16 +304,28 @@ fn log_event(event_type: &str, pattern: &str, reason: &str, lang: Option<&str>, 
             rusqlite::params![agent, event_type, pattern, reason, lang_str, match_count, ts],
         )?;
 
-        let cutoff = now.as_secs() - 30 * 86400;
-        let _ = conn.execute(
-            "DELETE FROM events WHERE CAST(substr(ts, 1, instr(ts, '.') - 1) AS INTEGER) < ?1",
-            rusqlite::params![cutoff],
-        );
-
+        // Retention is NOT done here (it would hold a write lock on every search,
+        // hurting concurrent agents). Old events are pruned lazily by stats/report
+        // and explicitly via `smart-rg prune`.
         Ok(())
     })();
 
     let _ = result;
+}
+
+// Delete events older than `days` days. Returns rows removed. (Comparisons are
+// kept — they hold the benchmark/savings data the report is built on.)
+fn prune_old_events(conn: &Connection, days: u64) -> usize {
+    let cutoff = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(days.saturating_mul(86400));
+    conn.execute(
+        "DELETE FROM events WHERE CAST(substr(ts, 1, instr(ts, '.') - 1) AS INTEGER) < ?1",
+        rusqlite::params![cutoff],
+    )
+    .unwrap_or(0)
 }
 
 // ── Language mapping ─────────────────────────────────────────
@@ -694,6 +726,10 @@ fn compute_stats() -> StatsReport {
         Some(c) => c,
         None => return empty_stats(),
     };
+
+    // Lazy retention: prune old events when the (infrequent, human-run) stats/report
+    // is generated, instead of on every search.
+    let _ = prune_old_events(&conn, 30);
 
     let total: u64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
     if total == 0 {
