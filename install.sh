@@ -1,6 +1,68 @@
 #!/bin/bash
 set -e
 
+# ── Claude Code settings merge (testable, no root, no install needed) ─────────
+# Sets env.USE_BUILTIN_RIPGREP="0" in the given settings.json while preserving
+# everything else. Honors SMARTRG_JSON_ENGINE=jq|python3|auto (default: auto)
+# so the smoke test can exercise each code path. Returns non-zero if no JSON
+# tool is available.
+merge_claude_setting() {
+    local settings="$1"
+    local engine="${SMARTRG_JSON_ENGINE:-auto}"
+    mkdir -p "$(dirname "$settings")"
+
+    # Fresh / empty file → write a minimal valid settings file.
+    if [ ! -s "$settings" ]; then
+        printf '{\n  "env": { "USE_BUILTIN_RIPGREP": "0" }\n}\n' > "$settings"
+        echo "✓ Created $settings (USE_BUILTIN_RIPGREP=0)"
+        return 0
+    fi
+
+    if { [ "$engine" = "jq" ] || [ "$engine" = "auto" ]; } && command -v jq >/dev/null 2>&1; then
+        local tmp; tmp="$(mktemp)"
+        if jq '.env = (((.env // {}) | if type == "object" then . else {} end) + {"USE_BUILTIN_RIPGREP":"0"})' \
+               "$settings" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            mv "$tmp" "$settings"
+            echo "✓ Set USE_BUILTIN_RIPGREP=0 in $settings (jq)"
+            return 0
+        fi
+        rm -f "$tmp"
+    fi
+
+    if { [ "$engine" = "python3" ] || [ "$engine" = "auto" ]; } && command -v python3 >/dev/null 2>&1; then
+        if python3 - "$settings" <<'PY'
+import json, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+    if not isinstance(d, dict): d = {}
+except Exception:
+    d = {}
+if not isinstance(d.get("env"), dict):
+    d["env"] = {}
+d["env"]["USE_BUILTIN_RIPGREP"] = "0"
+with open(p, "w") as f:
+    json.dump(d, f, indent=2); f.write("\n")
+PY
+        then
+            echo "✓ Set USE_BUILTIN_RIPGREP=0 in $settings (python3)"
+            return 0
+        fi
+    fi
+
+    echo "⚠️  Could not edit $settings (need jq or python3). Add manually:"
+    echo '      "env": { "USE_BUILTIN_RIPGREP": "0" }'
+    return 1
+}
+
+# Internal/convenience entrypoint: run ONLY the settings merge (no root, no
+# install). Used by tests; also handy to re-apply the Claude config standalone.
+#   ./install.sh --merge-claude-config [path]   (default: ~/.claude/settings.json)
+if [ "${1:-}" = "--merge-claude-config" ]; then
+    merge_claude_setting "${2:-$HOME/.claude/settings.json}"
+    exit $?
+fi
+
 echo "🪶 smart-rg installer"
 echo ""
 
@@ -15,8 +77,9 @@ for arg in "$@"; do
     --no-claude-config) CONFIGURE_CLAUDE=0 ;;
     -h|--help)
       echo "Usage: sudo ./install.sh [--with-grep] [--no-claude-config]"
-      echo "  --with-grep          also intercept 'grep' (shadows system grep; off by default)"
-      echo "  --no-claude-config   leave ~/.claude/settings.json untouched"
+      echo "  --with-grep             also intercept 'grep' (shadows system grep; off by default)"
+      echo "  --no-claude-config      leave ~/.claude/settings.json untouched"
+      echo "  --merge-claude-config [path]   (no root) only set USE_BUILTIN_RIPGREP=0 and exit"
       exit 0 ;;
   esac
 done
@@ -52,33 +115,7 @@ fi
 
 # --- configure Claude Code (it uses a BUNDLED rg unless USE_BUILTIN_RIPGREP=0) ---
 if [ "$CONFIGURE_CLAUDE" -eq 1 ]; then
-    SETTINGS="$TARGET_HOME/.claude/settings.json"
-    mkdir -p "$(dirname "$SETTINGS")"
-    if [ ! -f "$SETTINGS" ]; then
-        printf '{\n  "env": { "USE_BUILTIN_RIPGREP": "0" }\n}\n' > "$SETTINGS"
-        echo "✓ Created $SETTINGS (USE_BUILTIN_RIPGREP=0)"
-    elif command -v jq >/dev/null 2>&1; then
-        tmp="$(mktemp)"
-        jq '.env = ((.env // {}) + {"USE_BUILTIN_RIPGREP":"0"})' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-        echo "✓ Set USE_BUILTIN_RIPGREP=0 in $SETTINGS"
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 - "$SETTINGS" <<'PY'
-import json, sys
-p = sys.argv[1]
-try:
-    d = json.load(open(p))
-    if not isinstance(d, dict): d = {}
-except Exception:
-    d = {}
-d.setdefault("env", {})["USE_BUILTIN_RIPGREP"] = "0"
-with open(p, "w") as f:
-    json.dump(d, f, indent=2); f.write("\n")
-PY
-        echo "✓ Set USE_BUILTIN_RIPGREP=0 in $SETTINGS"
-    else
-        echo "⚠️  Could not auto-edit $SETTINGS (need jq or python3). Add manually:"
-        echo '      "env": { "USE_BUILTIN_RIPGREP": "0" }'
-    fi
+    merge_claude_setting "$TARGET_HOME/.claude/settings.json" || true
     chown -R "$TARGET_USER" "$TARGET_HOME/.claude" 2>/dev/null || true
 fi
 

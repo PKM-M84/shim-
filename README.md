@@ -289,6 +289,17 @@ src/main.rs
 
 ---
 
+## Tests
+
+The installer's Claude-settings merge has a smoke test covering the jq + python3
+engines and the fresh / existing / idempotent / malformed cases (no root needed):
+
+```bash
+bash tests/install_test.sh
+```
+
+---
+
 ## Safety
 
 - **Zero data leaves your machine.** No phone-home, no analytics, local SQLite only.
