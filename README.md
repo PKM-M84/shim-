@@ -172,6 +172,7 @@ smart-rg stats                         # terminal dashboard
 smart-rg stats --json                  # machine-readable
 smart-rg report -o report.html --open  # self-contained HTML report with charts
 smart-rg prune [--days 30]             # delete logged events older than N days
+smart-rg reset --yes                   # wipe ALL stats — events + comparisons (clean slate)
 ```
 
 The HTML report shows the **rg vs ast-grep comparison** per pattern — files matched, estimated tokens, and cost saved — the same shape as the benchmark table above. Comparison rows can carry **real** token/cost figures; live captures fall back to a `matches × 15 tokens @ $2/M` estimate.

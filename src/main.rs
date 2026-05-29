@@ -40,7 +40,7 @@ fn ensure_home() {
 // ── CLI ──────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "smart-rg", version = "0.2.1")]
+#[command(name = "smart-rg", version = "0.2.2")]
 #[command(disable_help_flag = true)]
 struct Cli {
     #[command(subcommand)]
@@ -113,6 +113,11 @@ enum Commands {
         #[arg(long, default_value_t = 30)]
         days: u64,
     },
+    /// Wipe ALL stats — events AND comparisons (incl. any seeded benchmark). Requires --yes.
+    Reset {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -145,6 +150,27 @@ fn main() {
                             let n = prune_old_events(&conn, days);
                             println!("🧹 Pruned {} event(s) older than {} day(s) from {}",
                                      n, days, db_path().display());
+                        }
+                        None => eprintln!("No stats database found."),
+                    }
+                    return;
+                }
+            }
+            "reset" => {
+                let cli = Cli::parse_from(args.iter());
+                if let Some(Commands::Reset { yes }) = cli.command {
+                    match open_db() {
+                        Some(conn) => {
+                            let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
+                            let cp: i64 = conn.query_row("SELECT COUNT(*) FROM comparisons", [], |r| r.get(0)).unwrap_or(0);
+                            if yes {
+                                let _ = conn.execute_batch("DELETE FROM events; DELETE FROM comparisons;");
+                                println!("🧼 Reset: cleared {} event(s) and {} comparison(s). Starting clean.", ev, cp);
+                            } else {
+                                println!("This deletes ALL stats: {} event(s) + {} comparison(s) (incl. any seeded benchmark)", ev, cp);
+                                println!("from {}.", db_path().display());
+                                println!("Re-run to confirm:  smart-rg reset --yes");
+                            }
                         }
                         None => eprintln!("No stats database found."),
                     }
