@@ -312,7 +312,9 @@ do_uninstall() {
     migrate_old_shim
 
     if [ "${PURGE:-0}" -eq 1 ]; then
-        rm -f "$SRG_HOME/stats.db"
+        # Remove the DB and its WAL sidecars (explicit names, so user backups
+        # like stats.db.bak-* are NOT swept up) — else -wal/-shm orphan the dir.
+        rm -f "$SRG_HOME/stats.db" "$SRG_HOME/stats.db-wal" "$SRG_HOME/stats.db-shm"
         rmdir "$SRG_HOME" 2>/dev/null || true
         echo "  removed ~/.smart-rg/stats.db (purged)"
     else
