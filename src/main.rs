@@ -13,10 +13,7 @@ use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-static LAST_CAPTURED_PATTERN: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 // ── Home directory ───────────────────────────────────────────
 
@@ -33,6 +30,60 @@ fn db_path() -> PathBuf {
     shim_home().join("stats.db")
 }
 
+// ── Real ripgrep resolution ──────────────────────────────────
+//
+// Loop-prevention: the installer prepends ~/.smart-rg/bin (which holds THIS
+// shim, named `rg`) to PATH position 1. So a bare "rg" PATH lookup would resolve
+// straight back to us and re-exec forever — a fork bomb on Linux. We therefore
+// (1) prefer the installer-written symlink ~/.smart-rg/bin/rg2 (points at the
+// genuine ripgrep), and (2) otherwise scan PATH for an `rg` whose canonical path
+// is neither this executable nor inside ~/.smart-rg/bin. We never fall back to a
+// bare "rg".
+fn real_rg_path() -> Option<PathBuf> {
+    let shim_bin = shim_home().join("bin");
+
+    // 1. Prefer the installer-written real-rg symlink.
+    let rg2 = shim_bin.join("rg2");
+    if is_executable_file(&rg2) {
+        return Some(rg2);
+    }
+
+    // 2. Scan PATH for the first `rg` that is provably not the shim.
+    let self_exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let shim_bin_canon = shim_bin.canonicalize().ok();
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let cand = dir.join("rg");
+            if !is_executable_file(&cand) {
+                continue;
+            }
+            let canon = match cand.canonicalize() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if self_exe.as_ref() == Some(&canon) {
+                continue; // this is the shim itself
+            }
+            if let Some(ref sb) = shim_bin_canon {
+                if canon.starts_with(sb) {
+                    continue; // lives in ~/.smart-rg/bin
+                }
+            }
+            return Some(canon);
+        }
+    }
+
+    None
+}
+
+fn is_executable_file(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(p) {
+        Ok(m) => m.is_file() && (m.permissions().mode() & 0o111 != 0),
+        Err(_) => false,
+    }
+}
+
 fn ensure_home() {
     let _ = std::fs::create_dir_all(shim_home());
 }
@@ -40,7 +91,7 @@ fn ensure_home() {
 // ── CLI ──────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "smart-rg", version = "0.2.2")]
+#[command(name = "smart-rg", version = "0.3.0")]
 #[command(disable_help_flag = true)]
 struct Cli {
     #[command(subcommand)]
@@ -233,16 +284,20 @@ fn main() {
 // ── Real rg executor ─────────────────────────────────────────
 
 fn exec_real_rg(args: &[String]) -> ! {
-    // Use the real ripgrep, not our shim on PATH (avoids circular symlink)
-    let real_rg = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "/opt/homebrew/bin/rg"
-    } else if cfg!(target_os = "macos") {
-        "/usr/local/bin/rg"
-    } else {
-        "rg"
+    // Forward to the real ripgrep, never our shim on PATH (see real_rg_path:
+    // a bare PATH lookup could resolve back to us and fork-bomb on Linux).
+    let real_rg = match real_rg_path() {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "smart-rg: real ripgrep not found; reinstall smart-rg or create \
+                 ~/.smart-rg/bin/rg2 symlinked to your ripgrep binary"
+            );
+            std::process::exit(127);
+        }
     };
 
-    let status = Command::new(real_rg)
+    let status = Command::new(&real_rg)
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -251,7 +306,7 @@ fn exec_real_rg(args: &[String]) -> ! {
     match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(2)),
         Err(e) => {
-            eprintln!("smart-rg: real rg not found at '{}' ({}) — is ripgrep installed?", real_rg, e);
+            eprintln!("smart-rg: failed to exec real rg at '{}' ({})", real_rg.display(), e);
             std::process::exit(2);
         }
     }
@@ -288,7 +343,7 @@ fn init_db(conn: &Connection) {
             rg_time_ms INTEGER NOT NULL DEFAULT 0,
             files_saved INTEGER NOT NULL DEFAULT 0,
             estimated_tokens_saved INTEGER NOT NULL DEFAULT 0,
-            estimated_cost_saved_cents INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_saved_cents REAL NOT NULL DEFAULT 0,
             ts TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_comparisons_ts ON comparisons(ts);"
@@ -452,16 +507,19 @@ fn translate_pattern(pattern: &str) -> String {
 /// Runs real rg --count on the ORIGINAL user CLI args (replay) to get
 /// accurate (total_matches, file_count) for ROI savings vs AST results.
 fn run_rg_count(original_args: &[String], search_path: &str) -> (u64, u64) {
-    let rg = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "/opt/homebrew/bin/rg"
-    } else if cfg!(target_os = "macos") {
-        "/usr/local/bin/rg"
-    } else {
-        "rg"
+    // Resolve the real ripgrep safely (never the shim — see real_rg_path).
+    // If we can't find it, skip the baseline rather than risk a re-exec loop.
+    let rg = match real_rg_path() {
+        Some(p) => p,
+        None => return (0, 0),
     };
 
-    let mut cmd = Command::new(rg);
-    cmd.arg("--count");
+    let mut cmd = Command::new(&rg);
+    // -F (literal): the intercepted pattern is often a structural form like `foo(`
+    // that is an INVALID regex for ripgrep. Without -F the baseline silently errors
+    // to 0 results and the reported savings collapse for exactly the paren-style
+    // patterns the shim is built to redirect.
+    cmd.arg("--count").arg("-F");
     let mut i = 0;
     let args_slice = original_args;
     while i < args_slice.len() {
@@ -472,22 +530,39 @@ fn run_rg_count(original_args: &[String], search_path: &str) -> (u64, u64) {
             i += 1;
             continue;
         }
-        // Translate --type to --type-add glob for file types rg doesn't know
+        // Translate --type to -g globs for EVERY language map_lang accepts. We
+        // glob uniformly rather than pass some type names through, because rg's
+        // type vocabulary doesn't match ast-grep's: rg has no `tsx`/`jsx` type and
+        // names Rust/Ruby `rust`/`ruby`, so `--type rs` etc. would error and zero
+        // the baseline. Globs always work; unknown types fall through unchanged.
         if arg == "--type" || arg == "-t" {
             if i + 1 < args_slice.len() {
-                let ft = args_slice[i + 1].as_str();
-                let ext = match ft {
-                    "ts" | "typescript" => "ts",
-                    "tsx" => "tsx",
-                    "js" | "javascript" => "js",
-                    "jsx" => "jsx",
-                    "py" | "python" => "py",
-                    "rs" | "rust" => "rs",
-                    "rb" | "ruby" => "rb",
-                    _ => "",
+                let globs: &[&str] = match args_slice[i + 1].as_str() {
+                    "ts" | "typescript" => &["*.ts"],
+                    "tsx" => &["*.tsx"],
+                    "js" | "javascript" => &["*.js"],
+                    "jsx" => &["*.jsx"],
+                    "py" | "python" => &["*.py"],
+                    "rs" | "rust" => &["*.rs"],
+                    "rb" | "ruby" => &["*.rb"],
+                    "go" | "golang" => &["*.go"],
+                    "java" => &["*.java"],
+                    "c" => &["*.c", "*.h"],
+                    "cpp" | "c++" => &["*.cpp", "*.cc", "*.cxx", "*.hpp", "*.hh"],
+                    "css" => &["*.css"],
+                    "html" => &["*.html"],
+                    "swift" => &["*.swift"],
+                    "kt" | "kotlin" => &["*.kt"],
+                    "scala" => &["*.scala"],
+                    "php" => &["*.php"],
+                    "sql" => &["*.sql"],
+                    "sh" | "bash" | "shell" => &["*.sh"],
+                    _ => &[],
                 };
-                if !ext.is_empty() {
-                    cmd.arg("-g").arg(format!("*.{}", ext));
+                if !globs.is_empty() {
+                    for g in globs {
+                        cmd.arg("-g").arg(g);
+                    }
                     i += 2;
                     continue;
                 }
@@ -496,8 +571,13 @@ fn run_rg_count(original_args: &[String], search_path: &str) -> (u64, u64) {
         cmd.arg(arg);
         i += 1;
     }
-    // Always append the search path (rg defaults to . but we may be in a different dir)
-    cmd.arg(search_path);
+    // Append the search path only if the replayed args don't already carry it.
+    // ripgrep does NOT dedupe path arguments, so passing it twice double-counts
+    // every file and inflates the reported savings. When the user passed no path,
+    // search_path is "." (clap's default) and is absent from the args, so we add it.
+    if !args_slice.iter().any(|a| a == search_path) {
+        cmd.arg(search_path);
+    }
 
     let output = match cmd.stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -539,15 +619,6 @@ fn log_comparison(
     rg_files: u64,
     rg_time_ms: u64,
 ) {
-    // Rate limit: skip duplicate consecutive captures for same pattern
-    let lock = LAST_CAPTURED_PATTERN.get_or_init(|| Mutex::new(None));
-    if let Ok(mut last) = lock.lock() {
-        if last.as_deref() == Some(pattern) {
-            return;
-        }
-        *last = Some(pattern.to_string());
-    }
-
     let files_saved = rg_files.saturating_sub(ag_files);
     let ast_tokens = ag_matches.saturating_mul(15);
     let text_tokens = rg_results.saturating_mul(15);
@@ -652,12 +723,15 @@ fn run_ast_grep(sg_pattern: &str, lang: &str, path: &str, cli: &Cli) -> u64 {
         }
     }
 
-    // Capture comparison data (rg vs ast-grep) for ROI report
+    // Capture comparison data (rg vs ast-grep) for ROI report. Record the RAW
+    // user pattern (what rg was counted against), not the translated ast-grep
+    // form, so the report's Pattern column matches the numbers beside it.
     if count > 0 {
+        let raw_pattern = cli.pattern.as_deref().unwrap_or(sg_pattern);
         let rg_start = Instant::now();
         let (rg_results, rg_file_count) = run_rg_count(&std::env::args().skip(1).collect::<Vec<_>>(), path);
         let rg_time_ms = rg_start.elapsed().as_millis() as u64;
-        log_comparison(&sg_pattern, lang, count, ag_file_count, ag_time_ms, rg_results, rg_file_count, rg_time_ms);
+        log_comparison(raw_pattern, lang, count, ag_file_count, ag_time_ms, rg_results, rg_file_count, rg_time_ms);
     }
 
     if matches.is_empty() {
@@ -907,8 +981,17 @@ fn compute_stats() -> StatsReport {
     if let Some(mut s) = stmt {
         let rows = s.query_map([], |row| {
             let fs: u64 = row.get(8)?;
-            let toks: u64 = row.get(9)?;
-            let cost: f64 = row.get(10)?;
+            let est_toks: u64 = row.get(9)?;
+            let est_cost: f64 = row.get(10)?;
+            let text_tokens: u64 = row.get(11)?;
+            let ast_tokens: u64 = row.get(12)?;
+            let text_cost: f64 = row.get(13)?;
+            let ast_cost: f64 = row.get(14)?;
+            // Mirror the report front-end's precedence (estimated_* || text − ast)
+            // so a seeded benchmark row whose estimate columns are 0 still feeds the
+            // headline KPIs — otherwise the totals silently disagree with the table.
+            let toks = if est_toks > 0 { est_toks } else { text_tokens.saturating_sub(ast_tokens) };
+            let cost = if est_cost != 0.0 { est_cost } else { text_cost - ast_cost };
             total_files_saved += fs;
             total_tokens_saved += toks;
             total_cost_saved += cost;
@@ -922,12 +1005,12 @@ fn compute_stats() -> StatsReport {
                 rg_files: row.get(6)?,
                 rg_time_ms: row.get(7)?,
                 files_saved: fs,
-                estimated_tokens_saved: toks,
-                estimated_cost_saved_cents: cost,
-                text_tokens: row.get(11)?,
-                ast_tokens: row.get(12)?,
-                text_cost_cents: row.get(13)?,
-                ast_cost_cents: row.get(14)?,
+                estimated_tokens_saved: est_toks,
+                estimated_cost_saved_cents: est_cost,
+                text_tokens,
+                ast_tokens,
+                text_cost_cents: text_cost,
+                ast_cost_cents: ast_cost,
             })
         }).ok();
         if let Some(rows) = rows {
